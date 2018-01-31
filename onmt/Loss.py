@@ -36,8 +36,9 @@ class LossComputeBase(nn.Module):
         super(LossComputeBase, self).__init__()
         self.generator = generator
         self.tgt_vocab = tgt_vocab
-        self.padding_idx = tgt_vocab.stoi[onmt.io.PAD_WORD]
-
+        # self.padding_idx = tgt_vocab.stoi[onmt.io.PAD_WORD]
+        self.padding_idx = tgt_vocab.stoi['<pad>']
+        
     def _make_shard_state(self, batch, output, range_, attns=None):
         """
         Make shard state dictionary for shards() to return iterable

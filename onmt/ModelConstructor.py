@@ -17,13 +17,12 @@ from onmt.modules import Embeddings, ImageEncoder, CopyGenerator, \
 from onmt.Utils import use_gpu
 
 
-def make_embeddings(opt, word_dict, feature_dicts, for_encoder=True):
+def make_embeddings(opt, word_dict, for_encoder=True):
     """
     Make an Embeddings instance.
     Args:
         opt: the option in current environment.
         word_dict(Vocab): words dictionary.
-        feature_dicts([Vocab], optional): a list of feature dictionary.
         for_encoder(bool): make Embeddings for encoder or decoder?
     """
     if for_encoder:
@@ -31,25 +30,13 @@ def make_embeddings(opt, word_dict, feature_dicts, for_encoder=True):
     else:
         embedding_dim = opt.tgt_word_vec_size
 
-    word_padding_idx = word_dict.stoi[onmt.io.PAD_WORD]
+    word_padding_idx = word_dict.stoi['pad']
     num_word_embeddings = len(word_dict)
 
-    feats_padding_idx = [feat_dict.stoi[onmt.io.PAD_WORD]
-                         for feat_dict in feature_dicts]
-    num_feat_embeddings = [len(feat_dict) for feat_dict in
-                           feature_dicts]
-
     return Embeddings(word_vec_size=embedding_dim,
-                      position_encoding=opt.position_encoding,
-                      feat_merge=opt.feat_merge,
-                      feat_vec_exponent=opt.feat_vec_exponent,
-                      feat_vec_size=opt.feat_vec_size,
                       dropout=opt.dropout,
                       word_padding_idx=word_padding_idx,
-                      feat_padding_idx=feats_padding_idx,
-                      word_vocab_size=num_word_embeddings,
-                      feat_vocab_sizes=num_feat_embeddings)
-
+                      word_vocab_size=num_word_embeddings)
 
 def make_encoder(opt, embeddings):
     """
@@ -127,7 +114,7 @@ def load_test_model(opt, dummy_opt):
     return fields, model, model_opt
 
 
-def make_base_model(model_opt, fields, gpu, checkpoint=None):
+def make_base_model(model_opt, lang_src, lang_tgt, gpu, checkpoint=None):
     """
     Args:
         model_opt: the option loaded from checkpoint.
@@ -138,36 +125,18 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
     Returns:
         the NMTModel.
     """
-    assert model_opt.model_type in ["text", "img", "audio"], \
+    assert model_opt.model_type in ["text"], \
         ("Unsupported model type %s" % (model_opt.model_type))
 
     # Make encoder.
-    if model_opt.model_type == "text":
-        src_dict = fields["src"].vocab
-        feature_dicts = onmt.io.collect_feature_vocabs(fields, 'src')
-        src_embeddings = make_embeddings(model_opt, src_dict,
-                                         feature_dicts)
-        encoder = make_encoder(model_opt, src_embeddings)
-    elif model_opt.model_type == "img":
-        encoder = ImageEncoder(model_opt.enc_layers,
-                               model_opt.brnn,
-                               model_opt.rnn_size,
-                               model_opt.dropout)
-    elif model_opt.model_type == "audio":
-        encoder = AudioEncoder(model_opt.enc_layers,
-                               model_opt.brnn,
-                               model_opt.rnn_size,
-                               model_opt.dropout,
-                               model_opt.sample_rate,
-                               model_opt.window_size)
+    src_dict = lang_src.vocab
+    src_embeddings = make_embeddings(model_opt, src_dict, for_encoder=True)
+    encoder = make_encoder(model_opt, src_embeddings)
 
     # Make decoder.
-    tgt_dict = fields["tgt"].vocab
-    feature_dicts = onmt.io.collect_feature_vocabs(fields, 'tgt')
-    tgt_embeddings = make_embeddings(model_opt, tgt_dict,
-                                     feature_dicts, for_encoder=False)
-
-    # Share the embedding matrix - preprocess with share_vocab required.
+    tgt_dict = lang_tgt.vocab
+    tgt_embeddings = make_embeddings(model_opt, tgt_dict, for_encoder=False)
+     # Share the embedding matrix - preprocess with share_vocab required.
     if model_opt.share_embeddings:
         # src/tgt vocab should be the same if `-share_vocab` is specified.
         if src_dict != tgt_dict:
@@ -175,7 +144,7 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
                                  'preprocess if you use share_embeddings!')
 
         tgt_embeddings.word_lut.weight = src_embeddings.word_lut.weight
-
+   
     decoder = make_decoder(model_opt, tgt_embeddings)
 
     # Make NMTModel(= encoder + decoder).
@@ -185,13 +154,12 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
     # Make Generator.
     if not model_opt.copy_attn:
         generator = nn.Sequential(
-            nn.Linear(model_opt.rnn_size, len(fields["tgt"].vocab)),
+            nn.Linear(model_opt.rnn_size, len(lang_tgt.vocab)),
             nn.LogSoftmax())
         if model_opt.share_decoder_embeddings:
             generator[0].weight = decoder.embeddings.word_lut.weight
     else:
-        generator = CopyGenerator(model_opt.rnn_size,
-                                  fields["tgt"].vocab)
+        generator = CopyGenerator(model_opt.rnn_size, lang_tgt.vocab)
 
     # Load the model states from checkpoint or initialize them.
     if checkpoint is not None:

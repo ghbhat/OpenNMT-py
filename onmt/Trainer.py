@@ -99,7 +99,7 @@ class Trainer(object):
     """
 
     def __init__(self, model, train_loss, valid_loss, optim,
-                 trunc_size=0, shard_size=32, data_type='text',
+                 trunc_size=0, shard_size=32,
                  norm_method="sents", grad_accum_count=1):
         # Basic attributes.
         self.model = model
@@ -108,7 +108,6 @@ class Trainer(object):
         self.optim = optim
         self.trunc_size = trunc_size
         self.shard_size = shard_size
-        self.data_type = data_type
         self.norm_method = norm_method
         self.grad_accum_count = grad_accum_count
 
@@ -121,7 +120,7 @@ class Trainer(object):
         # Set model in training mode.
         self.model.train()
 
-    def train(self, train_iter, epoch, report_func=None):
+    def train(self, train_iter, epoch, opt, report_func=None):
         """ Train next epoch.
         Args:
             train_iter: training data iterator
@@ -147,8 +146,8 @@ class Trainer(object):
             num_batches = -1
 
         for i, batch in enumerate(train_iter):
-            cur_dataset = train_iter.get_cur_dataset()
-            self.train_loss.cur_dataset = cur_dataset
+            # cur_dataset = train_iter.get_cur_dataset()
+            # self.train_loss.cur_dataset = cur_dataset
 
             true_batchs.append(batch)
             accum += 1
@@ -167,7 +166,7 @@ class Trainer(object):
                     report_stats = report_func(
                             epoch, idx, num_batches,
                             total_stats.start_time, self.optim.lr,
-                            report_stats)
+                            report_stats, opt)
 
                 true_batchs = []
                 accum = 0
@@ -194,19 +193,8 @@ class Trainer(object):
         stats = Statistics()
 
         for batch in valid_iter:
-            cur_dataset = valid_iter.get_cur_dataset()
-            self.valid_loss.cur_dataset = cur_dataset
-
-            src = onmt.io.make_features(batch, 'src', self.data_type)
-            if self.data_type == 'text':
-                _, src_lengths = batch.src
-            else:
-                src_lengths = None
-
-            tgt = onmt.io.make_features(batch, 'tgt')
-
             # F-prop through the model.
-            outputs, attns, _ = self.model(src, tgt, src_lengths)
+            outputs, attns, _ = self.model(batch.src, batch.tgt, batch.src_lengths)
 
             # Compute loss.
             batch_stats = self.valid_loss.monolithic_compute_loss(
@@ -270,24 +258,18 @@ class Trainer(object):
                 trunc_size = target_size
 
             dec_state = None
-            src = onmt.io.make_features(batch, 'src', self.data_type)
-            if self.data_type == 'text':
-                _, src_lengths = batch.src
-                report_stats.n_src_words += src_lengths.sum()
-            else:
-                src_lengths = None
-
-            tgt_outer = onmt.io.make_features(batch, 'tgt')
-
+            
+            report_stats.n_src_words += batch.src_lengths.sum()
+            
             for j in range(0, target_size-1, trunc_size):
                 # 1. Create truncated target.
-                tgt = tgt_outer[j: j + trunc_size]
+                tgt = batch.tgt[j: j + trunc_size]
 
                 # 2. F-prop all but generator.
                 if self.grad_accum_count == 1:
                     self.model.zero_grad()
                 outputs, attns, dec_state = \
-                    self.model(src, tgt, src_lengths, dec_state)
+                    self.model(batch.src, batch.tgt, batch.src_lengths, dec_state)
 
                 # 3. Compute loss in shards for memory efficiency.
                 batch_stats = self.train_loss.sharded_compute_loss(

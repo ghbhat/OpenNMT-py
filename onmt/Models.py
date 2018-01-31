@@ -34,7 +34,7 @@ class EncoderBase(nn.Module):
           E-->G
     """
     def _check_args(self, input, lengths=None, hidden=None):
-        s_len, n_batch, n_feats = input.size()
+        s_len, n_batch = input.size()
         if lengths is not None:
             n_batch_, = lengths.size()
             aeq(n_batch, n_batch_)
@@ -249,7 +249,7 @@ class RNNDecoderBase(nn.Module):
         """
         # Args Check
         assert isinstance(state, RNNDecoderState)
-        input_len, input_batch, _ = input.size()
+        input_len, input_batch = input.size()
         contxt_len, contxt_batch, _ = context.size()
         aeq(input_batch, contxt_batch)
         # END Args Check
@@ -431,7 +431,7 @@ class InputFeedRNNDecoder(RNNDecoderBase):
         # Additional args check.
         output = state.input_feed.squeeze(0)
         output_batch, _ = output.size()
-        input_len, input_batch, _ = input.size()
+        input_len, input_batch = input.size()
         aeq(input_batch, output_batch)
         # END Additional args check.
 
