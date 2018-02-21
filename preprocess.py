@@ -1,193 +1,151 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
-import argparse
-import os
-import glob
-import sys
-
-import torch
-
-import onmt.io
+from __future__ import unicode_literals, print_function, division
+import os, codecs, torchtext, torch, argparse
+from collections import Counter
 import opts
-
-
-def check_existing_pt_files(opt):
-    # We will use glob.glob() to find sharded {train|valid}.[0-9]*.pt
-    # when training, so check to avoid tampering with existing pt files
-    # or mixing them up.
-    for t in ['train', 'valid', 'vocab']:
-        pattern = opt.save_data + '.' + t + '*.pt'
-        if glob.glob(pattern):
-            sys.stderr.write("Please backup exisiting pt file: %s, "
-                             "to avoid tampering!\n" % pattern)
-            sys.exit(1)
-
+import codecs
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='preprocess.py',
+        description='umt.py',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-
     opts.add_md_help_argument(parser)
     opts.preprocess_opts(parser)
-
     opt = parser.parse_args()
-    torch.manual_seed(opt.seed)
-
-    check_existing_pt_files(opt)
-
     return opt
 
 
-def build_save_text_dataset_in_shards(src_corpus, tgt_corpus, fields,
-                                      corpus_type, opt):
-    '''
-    Divide the big corpus into shards, and build dataset separately.
-    This is currently only for data_type=='text'.
-
-    The reason we do this is to avoid taking up too much memory due
-    to sucking in a huge corpus file.
-
-    To tackle this, we only read in part of the corpus file of size
-    `max_shard_size`(actually it is multiples of 64 bytes that equals
-    or is slightly larger than this size), and process it into dataset,
-    then write it to disk along the way. By doing this, we only focus on
-    part of the corpus at any moment, thus effectively reducing memory use.
-    According to test, this method can reduce memory footprint by ~50%.
-
-    Note! As we process along the shards, previous shards might still
-    stay in memory, but since we are done with them, and no more
-    reference to them, if there is memory tight situation, the OS could
-    easily reclaim these memory.
-
-    If `max_shard_size` is 0 or is larger than the corpus size, it is
-    effectively preprocessed into one dataset, i.e. no sharding.
-
-    NOTE! `max_shard_size` is measuring the input corpus size, not the
-    output pt file size. So a shard pt file consists of examples of size
-    2 * `max_shard_size`(source + target).
-    '''
-
-    corpus_size = os.path.getsize(src_corpus)
-    if corpus_size > 10 * (1024**2) and opt.max_shard_size == 0:
-        print("Warning. The corpus %s is larger than 10M bytes, you can "
-              "set '-max_shard_size' to process it by small shards "
-              "to use less memory." % src_corpus)
-
-    if opt.max_shard_size != 0:
-        print(' * divide corpus into shards and build dataset separately'
-              '(shard_size = %d bytes).' % opt.max_shard_size)
-
-    ret_list = []
-    src_iter = onmt.io.ShardedTextCorpusIterator(
-                src_corpus, opt.src_seq_length_trunc,
-                "src", opt.max_shard_size)
-    tgt_iter = onmt.io.ShardedTextCorpusIterator(
-                tgt_corpus, opt.tgt_seq_length_trunc,
-                "tgt", opt.max_shard_size,
-                assoc_iter=src_iter)
-
-    index = 0
-    while not src_iter.hit_end():
-        index += 1
-        dataset = onmt.io.TextDataset(
-                fields, src_iter, tgt_iter,
-                src_iter.num_feats, tgt_iter.num_feats,
-                src_seq_length=opt.src_seq_length,
-                tgt_seq_length=opt.tgt_seq_length,
-                dynamic_dict=opt.dynamic_dict)
-
-        # We save fields in vocab.pt seperately, so make it empty.
-        dataset.fields = []
-
-        pt_file = "{:s}.{:s}.{:d}.pt".format(
-                opt.save_data, corpus_type, index)
-        print(" * saving %s data shard to %s." % (corpus_type, pt_file))
-        torch.save(dataset, pt_file)
-
-        ret_list.append(pt_file)
-
-    return ret_list
+def read_vocab(filename, data_path):
+    vocab_file = os.path.join(data_path, filename)
+    vocab = codecs.open(vocab_file, encoding='utf-8').read().strip().split('\n')
+    vocab_counter = Counter()
+    for word in vocab:
+      vocab_counter[word] += 1
+    return vocab_counter
 
 
-def build_save_dataset(corpus_type, fields, opt):
-    assert corpus_type in ['train', 'valid']
+def load_vocab_counter(dict_file):
+    vocab_counter = Counter()                                                                                                          
+    with open(dict_file, 'r') as f:                                                                                     
+        for line in f:                                                                                                  
+            word, idx = line.split()                                                                                    
+            vocab_counter[word.decode('utf8')] = int(idx)                                                                       
+                                                                                              
+    return vocab_counter
 
-    if corpus_type == 'train':
-        src_corpus = opt.train_src
-        tgt_corpus = opt.train_tgt
+
+def make_vocab(filename, data_path, from_counter=False):
+    if from_counter:
+        vocab_counter = load_vocab_counter(filename)
     else:
-        src_corpus = opt.valid_src
-        tgt_corpus = opt.valid_tgt
-
-    # Currently we only do preprocess sharding for corpus: data_type=='text'.
-    if opt.data_type == 'text':
-        return build_save_text_dataset_in_shards(
-                src_corpus, tgt_corpus, fields,
-                corpus_type, opt)
-
-    # For data_type == 'img' or 'audio', currently we don't do
-    # preprocess sharding. We only build a monolithic dataset.
-    # But since the interfaces are uniform, it would be not hard
-    # to do this should users need this feature.
-    dataset = onmt.io.build_dataset(
-                fields, opt.data_type, src_corpus, tgt_corpus,
-                src_dir=opt.src_dir,
-                src_seq_length=opt.src_seq_length,
-                tgt_seq_length=opt.tgt_seq_length,
-                src_seq_length_trunc=opt.src_seq_length_trunc,
-                tgt_seq_length_trunc=opt.tgt_seq_length_trunc,
-                dynamic_dict=opt.dynamic_dict,
-                sample_rate=opt.sample_rate,
-                window_size=opt.window_size,
-                window_stride=opt.window_stride,
-                window=opt.window)
-
-    # We save fields in vocab.pt seperately, so make it empty.
-    dataset.fields = []
-
-    pt_file = "{:s}.{:s}.pt".format(opt.save_data, corpus_type)
-    print(" * saving %s dataset to %s." % (corpus_type, pt_file))
-    torch.save(dataset, pt_file)
-
-    return [pt_file]
+        vocab_counter = read_vocab(filename, data_path)
+    specials = ['<unk>', '<pad>', '<sos>', '<eos>']
+    return torchtext.vocab.Vocab(vocab_counter, specials=specials)
 
 
-def build_save_vocab(train_dataset, fields, opt):
-    fields = onmt.io.build_vocab(train_dataset, fields, opt.data_type,
-                                 opt.share_vocab,
-                                 opt.src_vocab_size,
-                                 opt.src_words_min_frequency,
-                                 opt.tgt_vocab_size,
-                                 opt.tgt_words_min_frequency)
+def read_parallel_data(data_path, source_filename, target_filename):
+    # Read the file and split into lines
+    source_path = os.path.join(data_path, source_filename)
+    target_path = os.path.join(data_path, target_filename)
+    source_seqs = codecs.open(source_path, encoding='utf-8').read().strip().split('\n')
+    target_seqs = codecs.open(target_path, encoding='utf-8').read().strip().split('\n')
+    
+    # Normalize sentences, make into pairs and sort in descending order
+    source_seqs = [line.lower().strip().split() for line in source_seqs]
+    target_seqs = [line.lower().strip().split() for line in target_seqs]
 
-    # Can't save fields, so remove/reconstruct at training time.
-    vocab_file = opt.save_data + '.vocab.pt'
-    torch.save(onmt.io.save_fields_to_vocab(fields), vocab_file)
+    return source_seqs, target_seqs
 
 
-def main():
-    opt = parse_args()
+def filter_pairs_length(pairs, min_length, max_length):
+    filtered_pairs = []
+    for pair in pairs:
+        if len(pair[0]) >= min_length and len(pair[0]) <= max_length \
+            and len(pair[1]) >= min_length and len(pair[1]) <= max_length:
+                filtered_pairs.append(pair)
+    return filtered_pairs
 
-    print("Extracting features...")
-    src_nfeats = onmt.io.get_num_features(opt.data_type, opt.train_src, 'src')
-    tgt_nfeats = onmt.io.get_num_features(opt.data_type, opt.train_tgt, 'tgt')
-    print(" * number of source features: %d." % src_nfeats)
-    print(" * number of target features: %d." % tgt_nfeats)
 
-    print("Building `Fields` object...")
-    fields = onmt.io.get_fields(opt.data_type, src_nfeats, tgt_nfeats)
+def filter_oov_and_bound(sentence, vocab):
+    filtered_sentence = []
+    filtered_sentence.append(vocab.stoi['<sos>'])
+    for word in sentence:
+        if word not in vocab.stoi:
+            filtered_sentence.append(vocab.stoi['<unk>'])
+        else:
+            filtered_sentence.append(vocab.stoi[word])
+    filtered_sentence.append(vocab.stoi['<eos>'])
+    return filtered_sentence
 
-    print("Building & saving training data...")
-    train_dataset_files = build_save_dataset('train', fields, opt)
 
-    print("Building & saving vocabulary...")
-    build_save_vocab(train_dataset_files, fields, opt)
+def pad_seq(seq, max_length, PAD_token):
+    seq += [PAD_token for i in range(max_length - len(seq))]
+    return seq
 
-    print("Building & saving validation data...")
-    build_save_dataset('valid', fields, opt)
 
+def make_seq_map(seqs):
+    seq_vocabs = []
+    seq_maps = []
+    
+    for seq in seqs:
+        seq_vocab = torchtext.vocab.Vocab(Counter(seq))
+        seq_vocabs.append(seq_vocab)
+        # Mapping source tokens to indices in the dynamic dict.
+        seq_map = torch.LongTensor([seq_vocab.stoi[w] for w in seq])
+        seq_maps.append(seq_map)
+
+    return seq_vocabs, seq_maps
+    
+
+def prepare_train_data(opt):
+
+    print("Initializing languages and vocabularies")
+    src_vocab = make_vocab(opt.src_vocab, opt.data_path, opt.vocab_from_counter)
+    tgt_vocab = make_vocab(opt.tgt_vocab, opt.data_path, opt.vocab_from_counter)
+
+    print("Reading parallel training data...")
+    train_src, train_tgt = read_parallel_data(opt.data_path, opt.train_src, opt.train_tgt)
+    dev_src, dev_tgt = read_parallel_data(opt.data_path, opt.valid_src, opt.valid_tgt)
+    print("Done")
+    print("Read %d train and %d dev sequence pairs" % (len(train_src), len(dev_src)))
+    print()
+
+    print("Filtering sentences by length...")
+    train_data = filter_pairs_length(zip(train_src, train_tgt), 0, opt.src_seq_length)
+    dev_data = filter_pairs_length(zip(dev_src, dev_tgt), 0, opt.src_seq_length)
+    train_src, train_tgt = zip(*train_data)
+    dev_src, dev_tgt = zip(*dev_data)
+    print("Done")
+    print("Retained %d train and %d dev sequence pairs" % (len(train_src), len(dev_src)))
+    print()
+
+    print("Replacing out-of-vocabulary words and bounding...")
+    train_src = [filter_oov_and_bound(seq, src_vocab) for seq in train_src]
+    train_tgt = [filter_oov_and_bound(seq, tgt_vocab) for seq in train_tgt]
+    dev_src = [filter_oov_and_bound(seq, src_vocab) for seq in dev_src]
+    dev_tgt = [filter_oov_and_bound(seq, tgt_vocab) for seq in dev_tgt]
+    print("Done")
+    print()
+
+    return train_src, train_tgt, dev_src, dev_tgt, src_vocab, tgt_vocab
+
+    
+def prepare_test_data(opt, vocab_src, vocab_tgt):
+    
+    print("Reading test data...")
+    raw_src, raw_tgt = read_parallel_data(opt.test_path, opt.test_src, opt.test_tgt)
+    print("Read %d test sequence pairs" % len(raw_src))
+    print()
+
+    print("Replacing out-of-vocabulary words and bounding...")
+    src = [filter_oov_and_bound(seq, vocab_src) for seq in raw_src]
+    tgt = [filter_oov_and_bound(seq, vocab_tgt) for seq in raw_tgt]
+    print("Done")
+    print()
+
+    seq_vocabs, seq_maps = make_seq_map(src)
+
+    return raw_src, src, tgt, seq_vocabs, seq_maps
+    
 
 if __name__ == "__main__":
     main()

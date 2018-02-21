@@ -2,16 +2,12 @@
 # -*- coding: utf-8 -*-
 from __future__ import division
 
-import random
-
-import argparse
-import os
-import glob
-import sys
+import random, argparse, os, sys
 
 import torch
 import torch.nn as nn
 from torch import cuda
+from torch.autograd import Variable
 
 import onmt
 import onmt.io
@@ -21,7 +17,9 @@ import onmt.modules
 from onmt.Utils import use_gpu
 import opts
 
-from dataproc import *
+import gc
+
+from preprocess import *
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -29,8 +27,8 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     opts.add_md_help_argument(parser)
-    opts.preprocess_opts(parser)
     opts.model_opts(parser)
+    opts.preprocess_opts(parser)
     opts.train_opts(parser)
 
     opt = parser.parse_args()
@@ -75,32 +73,6 @@ def parse_args():
 
 
     return opt
-
-
-def prepare_data(opt):
-
-    print("Initializing languages and vocabularies")
-    lang_src = Lang(opt.src_lang)
-    lang_tgt = Lang(opt.tgt_lang)
-    lang_src.make_vocab(opt.src_vocab, opt.data_path)
-    lang_tgt.make_vocab(opt.tgt_vocab, opt.data_path)
-
-    print("Reading parallel training data...")
-    train_data = read_parallel_data(opt.data_path, opt.train_src, opt.train_tgt)
-    dev_data = read_parallel_data(opt.data_path, opt.valid_src, opt.valid_tgt)
-    print("Read %d train and %d dev sequence pairs" % (len(train_data), len(dev_data)))
-
-    print("Filtering sentences by length...")
-    train_data = filter_pairs_length(train_data, 0, opt.src_seq_length)
-    dev_data = filter_pairs_length(dev_data, 0, opt.src_seq_length)
-    print("Retained %d train and %d dev sequence pairs" % (len(train_data), len(dev_data)))
-
-    print("Replacing out-of-vocabulary words...")
-    train_data = filter_oov_words(train_data, lang_src, lang_tgt)
-    dev_data = filter_oov_words(dev_data, lang_src, lang_tgt)
-    print("Done")
-
-    return lang_src, lang_tgt, train_data, dev_data
 
 
 def build_model(model_opt, opt, lang_src, lang_tgt, checkpoint):
@@ -150,6 +122,7 @@ def build_optim(opt, model, checkpoint):
             start_decay_at=opt.start_decay_at,
             beta1=opt.adam_beta1,
             beta2=opt.adam_beta2,
+            sgd_momentum=opt.sgd_momentum,
             adagrad_accum=opt.adagrad_accumulator_init,
             decay_method=opt.decay_method,
             warmup_steps=opt.warmup_steps,
@@ -181,9 +154,10 @@ def make_loss_compute(model, tgt_vocab, opt):
     return compute
 
 
-def train_model(model, optim, model_opt, opt, train_data, valid_data, lang_src, lang_tgt):
-    train_loss = make_loss_compute(model, lang_tgt.vocab, opt)
-    valid_loss = make_loss_compute(model, lang_tgt.vocab, opt)
+def train_model(model, optim, model_opt, opt, train_src_seqs, train_tgt_seqs, \
+                valid_src_seqs, valid_tgt_seqs, vocab_src, vocab_tgt):
+    train_loss = make_loss_compute(model, vocab_src, opt)
+    valid_loss = make_loss_compute(model, vocab_tgt, opt)
 
     trunc_size = opt.truncated_decoder  # Badly named...
     shard_size = opt.max_generator_batches
@@ -199,88 +173,133 @@ def train_model(model, optim, model_opt, opt, train_data, valid_data, lang_src, 
           (opt.epochs + 1 - opt.start_epoch, opt.start_epoch))
     print(' * batch size: %d' % opt.batch_size)
 
-    for epoch in range(opt.start_epoch, opt.epochs + 1):
-        print('')
+    pad_token = vocab_src.stoi['<pad>']
 
+    for epoch in range(opt.start_epoch, opt.epochs + 1):
+        
         # 1. Train for one epoch on the training set.
-        train_iter = DatasetIterator(train_data, lang_src, lang_tgt, opt.batch_size, opt)
+        train_iter = DatasetIterator(train_src_seqs, train_tgt_seqs, pad_token, opt)
         train_stats = trainer.train(train_iter, epoch, opt, report_func)
         print('Train perplexity: %g' % train_stats.ppl())
         print('Train accuracy: %g' % train_stats.accuracy())
 
         # 2. Validate on the validation set.
-        valid_iter = DatasetIterator(valid_data, lang_src, lang_tgt, opt.batch_size, opt)
+        valid_iter = DatasetIterator(valid_src_seqs, valid_tgt_seqs, pad_token, opt, \
+                        is_inference=True)
         valid_stats = trainer.validate(valid_iter)
         print('Validation perplexity: %g' % valid_stats.ppl())
         print('Validation accuracy: %g' % valid_stats.accuracy())
 
-        # 3. Log to remote server.
-        if opt.exp_host:
-            train_stats.log("train", experiment, optim.lr)
-            valid_stats.log("valid", experiment, optim.lr)
-
-        # 4. Update the learning rate
+        # 3. Update the learning rate
         trainer.epoch_step(valid_stats.ppl(), epoch)
 
-        # 5. Drop a checkpoint if needed.
-        # if epoch >= opt.start_checkpoint_at:
-        #     trainer.drop_checkpoint(model_opt, epoch, fields, valid_stats)
+        # 4. Drop a checkpoint if needed.
+        if epoch >= opt.start_checkpoint_at:
+            trainer.drop_checkpoint(model_opt, vocab_src, vocab_tgt, epoch, valid_stats)
 
 class Batch(object):
-    def __init__(self, src_var, tgt_var, batch_src_lens, batch_tgt_lens):
-        self.src = src_var
-        self.tgt = tgt_var
-        self.src_lengths = batch_src_lens
-        self.tgt_lengths = batch_tgt_lens
-        self.batch_size = len(batch_src_lens)
+    def __init__(self, src, tgt, src_lens, tgt_lens, indices=None, src_maps=None):
+        self.src = src
+        self.tgt = tgt
+        self.src_lengths = src_lens
+        self.tgt_lengths = tgt_lens
+        self.batch_size = len(src_lens)
+        self.indices = indices
+        self.src_maps = src_maps
+
 
 class DatasetIterator(object):
-    def __init__(self, dataset, lang_src, lang_tgt, batch_size, opt):
-        self.dataset = dataset
-        random.shuffle(self.dataset)
-        self.lang_src = lang_src
-        self.lang_tgt = lang_tgt
-        self.batch_size = batch_size
-        self.num_batches = len(self.dataset)//batch_size + 1
-        self.is_cuda = opt.gpuid
+    def __init__(self, src_seqs, tgt_seqs, pad_token, opt, src_maps=None, is_inference=False, is_test=False):
+        self.src_seqs = src_seqs
+        self.tgt_seqs = tgt_seqs
+        self.src_maps = src_maps
+        self.pad_token = pad_token
+        self.is_cuda = False if is_test else opt.gpuid
+        self.is_inference = is_inference
+        self.is_test = is_test
 
+        if is_test:
+            self.batch_size = opt.batch_size
+        else: 
+            self.batch_size = opt.valid_batch_size if is_inference else opt.batch_size
+        self.num_batches = len(self.src_seqs) // self.batch_size
+        if len(self.src_seqs) % self.batch_size != 0:
+            self.num_batches += 1
+        
     def __iter__(self):
-        for i in range(self.num_batches):
-            batch_seqs = self.dataset[i*self.batch_size:(i+1)*self.batch_size]
-            sorted_batch_seqs = sorted(batch_seqs, key=lambda p: len(p[0]), reverse=True)                             
+        order = range(self.num_batches)
+        if not self.is_test: random.shuffle(order)
+        
+        for i in order:
+            start = i*self.batch_size
+            ln = self.batch_size
+            if start+ln>len(self.src_seqs):
+                ln = len(self.src_seqs)-start
 
-            batch_src = [pair[0] for pair in sorted_batch_seqs]
-            batch_tgt = [pair[1] for pair in sorted_batch_seqs]
-            batch_src_lens = [len(seq) for seq in batch_src]
-            batch_tgt_lens = [len(seq) for seq in batch_tgt]
+            src = self.src_seqs[start:start+ln]
+            tgt = self.tgt_seqs[start:start+ln]
+            src_lens = [len(seq) for seq in src]
+            tgt_lens = [len(seq) for seq in tgt]
+    
+            if self.is_test:
+                indices = range(start, start+ln)
+                src_maps = self.src_maps[start:start+ln]
+                sorted_materials = sorted(zip(src, tgt, src_lens, tgt_lens, indices, src_maps), 
+                                    key=lambda p: p[2], reverse=True)
+                src, tgt, src_lens, tgt_lens, indices, src_maps = zip(*sorted_materials)
+            else:
+                sorted_materials = sorted(zip(src, tgt, src_lens, tgt_lens), 
+                                    key=lambda p: p[2], reverse=True)
+                src, tgt, src_lens, tgt_lens = zip(*sorted_materials)
+            
+            max_src_len = src_lens[0]
+            max_tgt_len = max(tgt_lens)
+            src_padded = [pad_seq(seq, max_src_len, self.pad_token) for seq in src]
+            tgt_padded = [pad_seq(seq, max_tgt_len, self.pad_token) for seq in tgt]
 
-            max_src_len = len(batch_src[0])
-            max_tgt_len = max(batch_tgt_lens)
-            pad_token = self.lang_src.vocab.stoi['<pad>']
-            batch_src_padded = [self.pad_seq(seq, max_src_len, pad_token) for seq in batch_src]
-            batch_tgt_padded = [self.pad_seq(seq, max_tgt_len, pad_token) for seq in batch_tgt]
-
-            src_var = Variable(torch.LongTensor(batch_src_padded)).transpose(0, 1) 
-            tgt_var = Variable(torch.LongTensor(batch_tgt_padded)).transpose(0, 1)
-            batch_src_lens = torch.LongTensor(batch_src_lens)
-            batch_tgt_lens = torch.LongTensor(batch_tgt_lens)
+            src_var = Variable(torch.LongTensor(src_padded).transpose(0,1), \
+                volatile=self.is_inference)
+            tgt_var = Variable(torch.LongTensor(tgt_padded).transpose(0,1), \
+                volatile=self.is_inference)
+            # if not self.is_test:
+            #     tgt_var = Variable(tgt_var, volatile=self.is_inference)
+            # print(src_var.size())
+            src_lens = torch.LongTensor(src_lens)
+            tgt_lens = torch.LongTensor(tgt_lens)
 
             if self.is_cuda:
                 src_var = src_var.cuda()
                 tgt_var = tgt_var.cuda()
-                batch_src_lens = batch_src_lens.cuda()
-                batch_tgt_lens = batch_tgt_lens.cuda()
+                src_lens = src_lens.cuda()
+                tgt_lens = tgt_lens.cuda()
 
-            yield Batch(src_var, tgt_var, batch_src_lens, batch_tgt_lens)
+            if self.is_test:
+                indices = Variable(torch.LongTensor(indices), volatile=self.is_inference)
+                src_maps = self.make_src(src_maps)
+                if self.is_cuda:
+                    indices = indices.cuda()
+                    src_maps = src_maps.cuda()
+                yield Batch(src_var, tgt_var, src_lens, tgt_lens, indices, src_maps)
+            else:
+                yield Batch(src_var, tgt_var, src_lens, tgt_lens)
         
     def __len__(self):
-        return len(self.dataset)
+        return self.num_batches
 
     def pad_seq(self, seq, max_length, PAD_token):                                                                                                   
-        seq += [PAD_token for i in range(max_length - len(seq))]                                                            
-        return seq  
+        seq += [PAD_token for i in range(max_length - len(seq))]
+        return seq
 
-
+    #  From TextDataset.py
+    def make_src(self, data):
+        src_size = max([t.size(0) for t in data])
+        src_vocab_size = max([t.max() for t in data]) + 1
+        alignment = torch.zeros(src_size, len(data), src_vocab_size)
+        for i, sent in enumerate(data):
+            for j, t in enumerate(sent):
+                alignment[j, i, t] = 1
+        return alignment
+  
 
 def report_func(epoch, batch, num_batches,
                 start_time, lr, report_stats, opt):
@@ -310,8 +329,10 @@ def report_func(epoch, batch, num_batches,
 def main():
 
     opt = parse_args()
+    print(opt)
     
-    lang_src, lang_tgt, train_data, valid_data = prepare_data(opt)
+    train_src_seqs, train_tgt_seqs, valid_src_seqs, valid_tgt_seqs, \
+    src_vocab, tgt_vocab = prepare_train_data(opt)
 
     # Load checkpoint if we resume from a previous training.
     if opt.train_from:
@@ -326,7 +347,7 @@ def main():
         model_opt = opt
 
     # Build model.
-    model = build_model(model_opt, opt, lang_src, lang_tgt, checkpoint)
+    model = build_model(model_opt, opt, src_vocab, tgt_vocab, checkpoint)
     tally_parameters(model)
     check_save_model_path(opt)
 
@@ -334,7 +355,10 @@ def main():
     optim = build_optim(opt, model, checkpoint)
 
     # # Do training.
-    train_model(model, optim, model_opt, opt, train_data, valid_data, lang_src, lang_tgt)
+    train_model(model, optim, model_opt, opt, \
+                train_src_seqs, train_tgt_seqs, \
+                valid_src_seqs, valid_tgt_seqs, \
+                src_vocab, tgt_vocab)
 
 
 

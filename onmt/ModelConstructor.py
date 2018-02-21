@@ -33,6 +33,8 @@ def make_embeddings(opt, word_dict, for_encoder=True):
     word_padding_idx = word_dict.stoi['pad']
     num_word_embeddings = len(word_dict)
 
+    print("Making emebddings for vocabulary of size %d" % num_word_embeddings)
+
     return Embeddings(word_vec_size=embedding_dim,
                       dropout=opt.dropout,
                       word_padding_idx=word_padding_idx,
@@ -99,22 +101,23 @@ def make_decoder(opt, embeddings):
 def load_test_model(opt, dummy_opt):
     checkpoint = torch.load(opt.model,
                             map_location=lambda storage, loc: storage)
-    fields = onmt.io.load_fields_from_vocab(
-        checkpoint['vocab'], data_type=opt.data_type)
 
+    vocab_src = checkpoint['vocab_src']
+    vocab_tgt = checkpoint['vocab_tgt']
+    
     model_opt = checkpoint['opt']
     for arg in dummy_opt:
         if arg not in model_opt:
             model_opt.__dict__[arg] = dummy_opt[arg]
 
-    model = make_base_model(model_opt, fields,
+    model = make_base_model(model_opt, vocab_src, vocab_tgt,
                             use_gpu(opt), checkpoint)
     model.eval()
     model.generator.eval()
-    return fields, model, model_opt
+    return vocab_src, vocab_tgt, model, model_opt
 
 
-def make_base_model(model_opt, lang_src, lang_tgt, gpu, checkpoint=None):
+def make_base_model(model_opt, src_dict, tgt_dict, gpu, checkpoint=None):
     """
     Args:
         model_opt: the option loaded from checkpoint.
@@ -129,12 +132,10 @@ def make_base_model(model_opt, lang_src, lang_tgt, gpu, checkpoint=None):
         ("Unsupported model type %s" % (model_opt.model_type))
 
     # Make encoder.
-    src_dict = lang_src.vocab
     src_embeddings = make_embeddings(model_opt, src_dict, for_encoder=True)
     encoder = make_encoder(model_opt, src_embeddings)
 
     # Make decoder.
-    tgt_dict = lang_tgt.vocab
     tgt_embeddings = make_embeddings(model_opt, tgt_dict, for_encoder=False)
      # Share the embedding matrix - preprocess with share_vocab required.
     if model_opt.share_embeddings:
@@ -144,6 +145,17 @@ def make_base_model(model_opt, lang_src, lang_tgt, gpu, checkpoint=None):
                                  'preprocess if you use share_embeddings!')
 
         tgt_embeddings.word_lut.weight = src_embeddings.word_lut.weight
+
+    # if model_opt.pre_word_vecs_enc is not None:
+    #     print("Loading word vectors for encoder")
+    #     pretrained = torch.load(opt.pre_word_vecs_enc)
+    #     src_embeddings.word_lut.weight.data.copy_(pretrained)
+
+    # if model_opt.pre_word_vecs_dec is not None:
+    #     print("Loading word vectors for encoder")
+    #     pretrained = torch.load(opt.pre_word_vecs_dec)
+    #     tgt_embeddings.word_lut.weight.data.copy_(pretrained)
+
    
     decoder = make_decoder(model_opt, tgt_embeddings)
 
@@ -154,12 +166,12 @@ def make_base_model(model_opt, lang_src, lang_tgt, gpu, checkpoint=None):
     # Make Generator.
     if not model_opt.copy_attn:
         generator = nn.Sequential(
-            nn.Linear(model_opt.rnn_size, len(lang_tgt.vocab)),
+            nn.Linear(model_opt.rnn_size, len(tgt_dict)),
             nn.LogSoftmax())
         if model_opt.share_decoder_embeddings:
             generator[0].weight = decoder.embeddings.word_lut.weight
     else:
-        generator = CopyGenerator(model_opt.rnn_size, lang_tgt.vocab)
+        generator = CopyGenerator(model_opt.rnn_size, tgt_dict)
 
     # Load the model states from checkpoint or initialize them.
     if checkpoint is not None:

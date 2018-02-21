@@ -34,6 +34,7 @@ class Optim(object):
     def __init__(self, method, lr, max_grad_norm,
                  lr_decay=1, start_decay_at=None,
                  beta1=0.9, beta2=0.999,
+                 sgd_momentum=0.0,
                  adagrad_accum=0.0,
                  decay_method=None,
                  warmup_steps=4000,
@@ -48,6 +49,7 @@ class Optim(object):
         self.start_decay = False
         self._step = 0
         self.betas = [beta1, beta2]
+        self.sgd_momentum = sgd_momentum
         self.adagrad_accum = adagrad_accum
         self.decay_method = decay_method
         self.warmup_steps = warmup_steps
@@ -56,7 +58,7 @@ class Optim(object):
     def set_parameters(self, params):
         self.params = [p for p in params if p.requires_grad]
         if self.method == 'sgd':
-            self.optimizer = optim.SGD(self.params, lr=self.lr)
+            self.optimizer = optim.SGD(self.params, lr=self.lr, momentum=self.sgd_momentum)
         elif self.method == 'adagrad':
             self.optimizer = optim.Adagrad(self.params, lr=self.lr)
             for group in self.optimizer.param_groups:

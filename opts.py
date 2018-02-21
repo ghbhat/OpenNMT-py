@@ -50,7 +50,7 @@ def model_opts(parser):
                        the system to incorporate non-text inputs.
                        Options are [text|img|audio].""")
 
-    group.add_argument('-encoder_type', type=str, default='rnn',
+    group.add_argument('-encoder_type', type=str, default='brnn',
                        choices=['rnn', 'brnn', 'mean', 'transformer', 'cnn'],
                        help="""Type of encoder layer to use. Non-RNN layers
                        are experimental. Options are
@@ -125,10 +125,6 @@ def preprocess_opts(parser):
                        help="Source language.")
     group.add_argument('-tgt_lang', default="hi",
                        help="Target language.")
-    group.add_argument('-src_vocab', default="vocab.50000.en",
-                           help="Path to target vocabulary")
-    group.add_argument('-tgt_vocab', default="vocab.50000.hi",
-                           help="Path to source vocabulary")
 
 
     group.add_argument('-data_path', default="/projects/tir1/users/gbhat/data/wmt-splits",
@@ -141,10 +137,11 @@ def preprocess_opts(parser):
                        help="Path to the validation source data")
     group.add_argument('-valid_tgt', default="dev.hi",
                        help="Path to the validation target data")
-    
-    
-    # group.add_argument('-save_data', required=True,
-    #                    help="Output file for the prepared data")
+
+
+    group.add_argument('-save_data',
+                       default="/projects/tir1/users/gbhat/code/new/OpenNMT-py/processed_data",
+                       help="Output file for the prepared data")
 
     group.add_argument('-max_shard_size', type=int, default=0,
                        help="""For text corpus of large volume, it will
@@ -156,10 +153,10 @@ def preprocess_opts(parser):
     # Dictionary options, for text corpus
 
     group = parser.add_argument_group('Vocab')
-    # group.add_argument('-src_vocab',
-    #                    help="Path to an existing source vocabulary")
-    # group.add_argument('-tgt_vocab',
-    #                    help="Path to an existing target vocabulary")
+    group.add_argument('-src_vocab', default="vocab.50000.en",
+                           help="Path to target vocabulary")
+    group.add_argument('-tgt_vocab', default="vocab.50000.hi",
+                           help="Path to source vocabulary")
     group.add_argument('-features_vocabs_prefix', type=str, default='',
                        help="Path prefix to existing features vocabularies")
     group.add_argument('-src_vocab_size', type=int, default=50000,
@@ -214,11 +211,11 @@ def train_opts(parser):
     # Model loading/saving options
 
     group = parser.add_argument_group('General')
-    # group.add_argument('-data', required=True,
-    #                    help="""Path prefix to the ".train.pt" and
-    #                    ".valid.pt" file path from preprocess.py""")
+    group.add_argument('-data',
+                       default="/projects/tir1/users/gbhat/code/new/OpenNMT-py/processed_data",
+                       help="""File with processed data from preprocess.py""")
 
-    group.add_argument('-save_model', default='model',
+    group.add_argument('-save_model', default='/projects/tir1/users/gbhat/work/SMT/model',
                        help="""Model filename (the model will be saved as
                        <save_model>_epochN_PPL.pt where PPL is the
                        validation perplexity""")
@@ -251,6 +248,10 @@ def train_opts(parser):
                        help="""If a valid path is specified, then this will load
                        pretrained word embeddings on the decoder side.
                        See README for specific formatting instructions.""")
+    group.add_argument('-vocab_from_counter',
+                       action='store_true',
+                       help="Load vocabulary from counter instead of list.")
+    
     # Fixed word vectors
     group.add_argument('-fix_word_vecs_enc',
                        action='store_true',
@@ -281,11 +282,13 @@ def train_opts(parser):
                        help="""Maximum batches of words in a sequence to run
                         the generator on in parallel. Higher is faster, but
                         uses more memory.""")
-    group.add_argument('-epochs', type=int, default=13,
+    group.add_argument('-epochs', type=int, default=50,
                        help='Number of training epochs')
     group.add_argument('-optim', default='sgd',
                        choices=['sgd', 'adagrad', 'adadelta', 'adam'],
                        help="""Optimization method.""")
+    group.add_argument('-sgd_momentum', type=float, default=0,
+                       help="""SGD momentum""")
     group.add_argument('-adagrad_accumulator_init', type=float, default=0,
                        help="""Initializes the accumulator values in adagrad.
                        Mirrors the initial_accumulator_value option
@@ -347,7 +350,7 @@ def train_opts(parser):
                        help="""Number of warmup steps for custom decay.""")
 
     group = parser.add_argument_group('Logging')
-    group.add_argument('-report_every', type=int, default=256,
+    group.add_argument('-report_every', type=int, default=100,
                        help="Print stats at this interval.")
     group.add_argument('-exp_host', type=str, default="",
                        help="Send logs to this crayon server.")
@@ -364,8 +367,8 @@ def train_opts(parser):
 
 def translate_opts(parser):
     group = parser.add_argument_group('Model')
-    # group.add_argument('-model', required=True,
-    #                    help='Path to model .pt file')
+    group.add_argument('-model', default="model_acc_35.87_ppl_56.89_e12.pt",
+                       help='Path to model .pt file')
 
     group = parser.add_argument_group('Data')
     group.add_argument('-data_type', default="text",
@@ -374,10 +377,16 @@ def translate_opts(parser):
     # group.add_argument('-src',   required=True,
     #                    help="""Source sequence to decode (one line per
     #                    sequence)""")
-    group.add_argument('-src_dir',   default="",
-                       help='Source directory for image or audio files')
-    group.add_argument('-tgt',
-                       help='True target sequence (optional)')
+    # group.add_argument('-src_dir',   default="",
+    #                    help='Source directory for image or audio files')
+    group.add_argument('-test_path', default="/projects/tir1/users/gbhat/data/wmt-splits",
+                       help="Source directory for files.")
+    group.add_argument('-test_src', default="dev.en",
+                       help="Path to the test source data")
+    group.add_argument('-test_tgt', default="",
+                       help="Path to the test target data")
+    # group.add_argument('-tgt',
+    #                    help='True target sequence (optional)')
     group.add_argument('-output', default='pred.txt',
                        help="""Path to output the predictions (each line will
                        be the decoded sequence""")
@@ -432,7 +441,7 @@ def translate_opts(parser):
                        decoded sentences""")
 
     group = parser.add_argument_group('Efficiency')
-    group.add_argument('-batch_size', type=int, default=30,
+    group.add_argument('-batch_size', type=int, default=32,
                        help='Batch size')
     group.add_argument('-gpu', type=int, default=-1,
                        help="Device to run on")

@@ -19,16 +19,17 @@ class TranslationBuilder(object):
        replace_unk (bool): replace unknown words using attention
        has_tgt (bool): will the batch have gold targets
     """
-    def __init__(self, data, fields, n_best=1, replace_unk=False,
+    def __init__(self, src_vocabs, src_raws, tgt_vocab, n_best=1, replace_unk=False,
                  has_tgt=False):
-        self.data = data
-        self.fields = fields
+        self.data_src_vocabs = src_vocabs
+        self.data_src_raws = src_raws
+        self.tgt_vocab = tgt_vocab
         self.n_best = n_best
         self.replace_unk = replace_unk
         self.has_tgt = has_tgt
 
     def _build_target_tokens(self, src, src_vocab, src_raw, pred, attn):
-        vocab = self.fields["tgt"].vocab
+        vocab = self.tgt_vocab
         tokens = []
         for tok in pred:
             if tok < len(vocab):
@@ -61,11 +62,8 @@ class TranslationBuilder(object):
 
         # Sorting
         inds, perm = torch.sort(batch.indices.data)
-        data_type = self.data.data_type
-        if data_type == 'text':
-            src = batch.src[0].data.index_select(1, perm)
-        else:
-            src = None
+        # src = batch.src[0].data.index_select(1, perm)
+        src = batch.src.data.index_select(1, perm)
 
         if self.has_tgt:
             tgt = batch.tgt.data.index_select(1, perm)
@@ -74,13 +72,10 @@ class TranslationBuilder(object):
 
         translations = []
         for b in range(batch_size):
-            if data_type == 'text':
-                src_vocab = self.data.src_vocabs[inds[b]] \
-                  if self.data.src_vocabs else None
-                src_raw = self.data.examples[inds[b]].src
-            else:
-                src_vocab = None
-                src_raw = None
+            src_vocab = self.data_src_vocabs[inds[b]] \
+              if self.data_src_vocabs else None
+            src_vocab = None
+            src_raw = self.data_src_raws[inds[b]]
             pred_sents = [self._build_target_tokens(
                 src[:, b] if src is not None else None,
                 src_vocab, src_raw,

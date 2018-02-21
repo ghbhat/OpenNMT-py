@@ -249,6 +249,7 @@ class RNNDecoderBase(nn.Module):
         """
         # Args Check
         assert isinstance(state, RNNDecoderState)
+        # print(input.size())
         input_len, input_batch = input.size()
         contxt_len, contxt_batch, _ = context.size()
         aeq(input_batch, contxt_batch)

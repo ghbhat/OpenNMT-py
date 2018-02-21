@@ -16,9 +16,6 @@ import onmt.ModelConstructor
 import onmt.modules
 import opts
 
-from preprocess import *
-from umt import *
-
 parser = argparse.ArgumentParser(
     description='translate.py',
     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -38,7 +35,7 @@ def _report_bleu():
     import subprocess
     print()
     res = subprocess.check_output(
-        "perl tools/multi-bleu.perl %s < %s" % (opt.test_tgt, opt.output),
+        "perl tools/multi-bleu.perl %s < %s" % (opt.tgt, opt.output),
         shell=True).decode("utf-8")
     print(">> " + res.strip())
 
@@ -46,7 +43,7 @@ def _report_bleu():
 def _report_rouge():
     import subprocess
     res = subprocess.check_output(
-        "python tools/test_rouge.py -r %s -c %s" % (opt.test_tgt, opt.output),
+        "python tools/test_rouge.py -r %s -c %s" % (opt.tgt, opt.output),
         shell=True).decode("utf-8")
     print(res.strip())
 
@@ -61,23 +58,32 @@ def main():
         torch.cuda.set_device(opt.gpu)
 
     # Load the model.
-    vocab_src, vocab_tgt, model, model_opt = \
+    fields, model, model_opt = \
         onmt.ModelConstructor.load_test_model(opt, dummy_opt.__dict__)
 
     # File to write sentences to.
     out_file = codecs.open(opt.output, 'w', 'utf-8')
 
     # Test data
-    raw_src, src_seqs, tgt_seqs, src_dicts, src_maps = prepare_test_data(opt, vocab_src, vocab_tgt)
+    data = onmt.io.build_dataset(fields, opt.data_type,
+                                 opt.src, opt.tgt,
+                                 src_dir=opt.src_dir,
+                                 sample_rate=opt.sample_rate,
+                                 window_size=opt.window_size,
+                                 window_stride=opt.window_stride,
+                                 window=opt.window,
+                                 use_filter_pred=False)
 
-    # Test iterator
-    pad_token = vocab_src.stoi['<pad>']
-    data_iter = DatasetIterator(src_seqs, tgt_seqs, pad_token, opt, \
-                is_inference=True, is_test=True, src_maps=src_maps)
-    
+    # Sort batch by decreasing lengths of sentence required by pytorch.
+    # sort=False means "Use dataset's sortkey instead of iterator's".
+    data_iter = onmt.io.OrderedIterator(
+        dataset=data, device=opt.gpu,
+        batch_size=opt.batch_size, train=False, sort=False,
+        sort_within_batch=True, shuffle=False)
+
     # Translator
     scorer = onmt.translate.GNMTGlobalScorer(opt.alpha, opt.beta)
-    translator = onmt.translate.Translator(model, vocab_tgt,
+    translator = onmt.translate.Translator(model, fields,
                                            beam_size=opt.beam_size,
                                            n_best=opt.n_best,
                                            global_scorer=scorer,
@@ -87,8 +93,8 @@ def main():
                                            beam_trace=opt.dump_beam != "",
                                            min_length=opt.min_length)
     builder = onmt.translate.TranslationBuilder(
-        src_dicts, raw_src, translator.tgt_vocab,
-        opt.n_best, opt.replace_unk, opt.test_tgt)
+        data, translator.fields,
+        opt.n_best, opt.replace_unk, opt.tgt)
 
     # Statistics
     counter = count(1)
@@ -96,13 +102,13 @@ def main():
     gold_score_total, gold_words_total = 0, 0
 
     for batch in data_iter:
-        batch_data = translator.translate_batch(batch, src_dicts)
+        batch_data = translator.translate_batch(batch, data)
         translations = builder.from_batch(batch_data)
 
         for trans in translations:
             pred_score_total += trans.pred_scores[0]
             pred_words_total += len(trans.pred_sents[0])
-            if opt.test_tgt:
+            if opt.tgt:
                 gold_score_total += trans.gold_score
                 gold_words_total += len(trans.gold_sent)
 
@@ -118,7 +124,7 @@ def main():
                 os.write(1, output.encode('utf-8'))
 
     _report_score('PRED', pred_score_total, pred_words_total)
-    if opt.test_tgt:
+    if opt.tgt:
         _report_score('GOLD', gold_score_total, gold_words_total)
         if opt.report_bleu:
             _report_bleu()
