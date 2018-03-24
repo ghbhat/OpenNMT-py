@@ -109,8 +109,8 @@ class Embeddings(nn.Module):
           emb_file (str) : path to torch serialized embeddings
           fixed (bool) : if true, embeddings are not updated
         """
-        print("loading pretrained embeddings")
         if emb_file:
+            print("loading pretrained embeddings")
             pretrained = torch.load(emb_file)
             self.make_embedding[0].weight.data.copy_(pretrained)
             if fixed:

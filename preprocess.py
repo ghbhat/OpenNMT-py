@@ -67,7 +67,7 @@ def filter_pairs_length(pairs, min_length, max_length):
 
 def filter_oov_and_bound(sentence, vocab):
     filtered_sentence = []
-    filtered_sentence.append(vocab.stoi['<sos>'])
+    # filtered_sentence.append(vocab.stoi['<sos>'])
     for word in sentence:
         if word not in vocab.stoi:
             filtered_sentence.append(vocab.stoi['<unk>'])

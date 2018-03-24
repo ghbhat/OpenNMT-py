@@ -21,8 +21,6 @@ python umt.py -gpuid 0 -data_path "/projects/tir1/users/gbhat/data/russian/en-ru
         -src_vocab "/projects/tir1/users/gbhat/work/SMT_en_ru/en_vocab" \
         -tgt_vocab "/projects/tir1/users/gbhat/work/SMT_en_ru/ru_vocab" \
         -save_model "/projects/tir1/users/gbhat/work/SMT_en_ru/model" \
-        -pre_word_vecs_enc "/projects/tir1/users/gbhat/work/SMT_en_ru/en_emb.pt" \
-        -pre_word_vecs_dec "/projects/tir1/users/gbhat/work/SMT_en_ru/ru_emb.pt" \
         -src_word_vec_size 300 \
         -tgt_word_vec_size 300 \
         -report_every 500 \
@@ -31,10 +29,12 @@ python umt.py -gpuid 0 -data_path "/projects/tir1/users/gbhat/data/russian/en-ru
         -report_every 3000 \
         -vocab_from_counter \
         -layers 2 \
-        -learning_rate 0.1 \
-        -sgd_momentum 0.95
-        
-
+        -learning_rate 1 \
+        -sgd_momentum 0.1 \
+        -pre_word_vecs_enc "/projects/tir1/users/gbhat/work/SMT_en_ru/wiki.en.pt" \
+        -pre_word_vecs_dec "/projects/tir1/users/gbhat/work/SMT_en_ru/wiki.ru.pt" 
+        # -pre_word_vecs_enc "/projects/tir1/users/gbhat/work/SMT_en_ru/wiki.multi.en.pt" \
+        # -pre_word_vecs_dec "/projects/tir1/users/gbhat/work/SMT_en_ru/wiki.multi.ru.pt" 
 # python translate.py \
 # -model "/projects/tir1/users/gbhat/work/SMT_en_ru/model_acc_66.69_ppl_5.12_e10.pt" \
 # -test_path "/projects/tir1/users/gbhat/data/russian/en-ru/" \

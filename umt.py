@@ -156,7 +156,7 @@ def make_loss_compute(model, tgt_vocab, opt):
 
 def train_model(model, optim, model_opt, opt, train_src_seqs, train_tgt_seqs, \
                 valid_src_seqs, valid_tgt_seqs, vocab_src, vocab_tgt):
-    train_loss = make_loss_compute(model, vocab_src, opt)
+    train_loss = make_loss_compute(model, vocab_tgt, opt)
     valid_loss = make_loss_compute(model, vocab_tgt, opt)
 
     trunc_size = opt.truncated_decoder  # Badly named...
